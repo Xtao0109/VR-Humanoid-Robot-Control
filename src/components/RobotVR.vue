@@ -7,8 +7,15 @@ import * as THREE from 'three';
 import { ref, onMounted, onUnmounted } from 'vue';
 import { VRButton } from '../VRButton.js'; 
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+// VR 控制页不再内嵌 AvatarMappingPanel，改由独立配置页负责上传和映射
 
 const container = ref(null);
+// 当前使用的 Avatar 配置（为空时使用内置 RobotExpressive）
+// 可能来自：
+// - 预设（avatars.json 中的某一项）：{ presetId, modelUrl, mapping, meta }
+// - 自定义上传：{ url, mapping, meta }
+const currentAvatarConfig = ref(null);
+const AVATAR_CONFIG_KEY = 'vr_avatar_config_v1';
 let camera, scene, renderer, robot, mixer;
 let controller1, controller2; // VR 手柄对象
 let controller1Hand = null;   // 'left' | 'right' | null
@@ -129,6 +136,15 @@ function hideHint() { if (hintDiv) hintDiv.style.display = 'none'; }
 // 动态解析的手部骨骼名称（会在模型加载后修正）
 let LEFT_HAND_NAME = 'mixamorigLeftHand';
 let RIGHT_HAND_NAME = 'mixamorigRightHand';
+// 由 Avatar 映射显式指定的关节名称（优先级高于自动推断）
+let MAPPED_JOINTS = {
+  leftShoulder: '',
+  leftElbow: '',
+  leftHand: '',
+  rightShoulder: '',
+  rightElbow: '',
+  rightHand: '',
+};
 // 保存加载时检测到的骨骼名称，供运行时查找使用
 let detectedBoneNames = [];
 let detectedMeshSkeletonBones = [];
@@ -173,7 +189,31 @@ const LOCOMOTION_SPEED = 0.05;
 // RobotExpressive 模型中右手关节的名称
 const RIGHT_HAND_JOINT_NAME = 'mixamorigRightHand'; 
 
+// 将任意机器人模型放置在用户前方的通用函数
+function placeRobotInFrontOfUser(robotObject) {
+  if (!robotObject) return;
+  // 机器人固定在用户前方3米处（不跟随头部移动）
+  robotObject.position.set(0, 0, -3.0);
+  // 默认旋转180度，背对用户（大部分模型默认面向+Z，旋转后面向-Z）
+  if (robotObject.rotation) {
+    robotObject.rotation.y = Math.PI;
+  }
+  // 若模型缩放过大/过小，可在后续根据包围盒自适应调整
+}
+
 onMounted(() => {
+  // 尝试从 localStorage 读取 Avatar 配置（由配置页写入）
+  try {
+    const raw = localStorage.getItem(AVATAR_CONFIG_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      currentAvatarConfig.value = parsed;
+      console.log('[RobotVR] Loaded avatar config from localStorage');
+    }
+  } catch (e) {
+    console.warn('[RobotVR] Failed to read avatar config from localStorage', e);
+  }
+
   init();
   animate();
   window.addEventListener('resize', onWindowResize);
@@ -245,8 +285,18 @@ function init() {
   scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 1));
   scene.add(new THREE.DirectionalLight(0xffffff, 0.8));
 
-  // 4. 加载机器人模型
-  loadRobotModel();
+  // 4. 加载机器人模型（默认或根据配置加载）
+  if (currentAvatarConfig.value) {
+    try {
+      // 如果只是一个包含 modelUrl + mapping 的轻量配置，则在内部再次用 GLTFLoader 加载
+      applyAvatarConfig(currentAvatarConfig.value);
+    } catch (e) {
+      console.error('[Avatar] apply avatar on init failed, fallback to default robot', e);
+      loadRobotModel();
+    }
+  } else {
+    loadRobotModel();
+  }
 
   // 5. 配置 VR 控制器
   setupControllers();
@@ -304,12 +354,9 @@ function loadRobotModel() {
     function (gltf) {
       scene.remove(robot); // 移除占位符
       robot = gltf.scene;
-      // 机器人固定在用户前方3米处（不跟随头部移动）
-      robot.position.set(0, 0, -3.0);
-      // 机器人旋转180度，背对用户（模型默认面向+Z，旋转后面向-Z）
-      robot.rotation.y = Math.PI;
-      robot.scale.set(1, 1, 1); 
-      scene.add(robot);
+  // 使用通用的放置逻辑
+  placeRobotInFrontOfUser(robot);
+  scene.add(robot);
       
       showDebug('✓ 机器人加载完成，位置:(0,0,-3) 朝向:-Z(背对用户)');
 
@@ -471,6 +518,194 @@ function loadRobotModel() {
       console.error('[VR] 加载机器人模型失败（GLTFLoader onError）。将使用占位模型。', error);
     }
   );
+}
+
+// 应用 Avatar 配置：
+// - 若包含 raw.gltf/scene（同页上传），直接使用现有场景克隆
+// - 若仅包含 modelUrl+mapping（预设），则通过 GLTFLoader 再加载一次模型
+function applyAvatarConfig(config) {
+  if (!scene) return;
+
+  // 1. 清理旧机器人
+  if (robot && robot.parent === scene) {
+    try { scene.remove(robot); } catch (e) { console.warn('[Avatar] remove old robot failed', e); }
+  }
+
+  // 2. 预设：仅有 modelUrl/mapping，没有 raw.gltf
+  if (config && !config.raw && config.modelUrl) {
+    const url = config.modelUrl;
+    console.log('[Avatar] loading preset avatar from url:', url);
+
+    const loader = new GLTFLoader();
+    loader.load(
+      url,
+      (gltf) => {
+        try {
+          robot = gltf.scene;
+          placeRobotInFrontOfUser(robot);
+          scene.add(robot);
+
+          // 根据映射优先确定关键骨骼名称（手部 + 肩/肘）
+          try {
+            if (config.mapping) {
+              // 记录完整映射，供后续 IK 构建使用
+              MAPPED_JOINTS = {
+                leftShoulder: config.mapping.leftShoulder || '',
+                leftElbow: config.mapping.leftElbow || '',
+                leftHand: config.mapping.leftHand || '',
+                rightShoulder: config.mapping.rightShoulder || '',
+                rightElbow: config.mapping.rightElbow || '',
+                rightHand: config.mapping.rightHand || '',
+              };
+
+              if (MAPPED_JOINTS.leftHand) LEFT_HAND_NAME = MAPPED_JOINTS.leftHand;
+              if (MAPPED_JOINTS.rightHand) RIGHT_HAND_NAME = MAPPED_JOINTS.rightHand;
+            } else {
+              MAPPED_JOINTS = {
+                leftShoulder: '', leftElbow: '', leftHand: '',
+                rightShoulder: '', rightElbow: '', rightHand: '',
+              };
+            }
+          } catch (e) {
+            console.warn('[Avatar] apply preset mapping names failed', e);
+          }
+
+          // 重新收集骨骼名称
+          detectedBoneNames = [];
+          detectedMeshSkeletonBones = [];
+          robot.traverse((child) => {
+            if (child.isBone) detectedBoneNames.push(child.name);
+            if (child.isMesh && child.skeleton) {
+              detectedMeshSkeletonBones.push(child.skeleton.bones.map((b) => b.name));
+            }
+          });
+          console.log('[AVATAR] (preset) boneNames:', detectedBoneNames);
+          console.log('[AVATAR] (preset) mesh skeleton bones:', detectedMeshSkeletonBones);
+
+          // 重新构建手臂链、手指链和碰撞体等
+          buildArmChainsFromMappingOrAuto();
+          detectFingerBones();
+          buildFingerChains();
+          createDebugHelpers();
+          initBodyColliders();
+
+          // 重新建立动画混合器（若模型带有动画）
+          mixer = null;
+          idleAction = null;
+          walkAction = null;
+          if (gltf.animations && gltf.animations.length) {
+            mixer = new THREE.AnimationMixer(robot);
+            console.log(`[AVATAR] (preset) found ${gltf.animations.length} animations`);
+            gltf.animations.forEach((clip) => {
+              const lowerName = clip.name.toLowerCase();
+              if (lowerName.includes('idle')) idleAction = mixer.clipAction(clip);
+              if (lowerName === 'walking' || (lowerName.includes('walk') && !lowerName.includes('jump') && !lowerName.includes('run'))) {
+                walkAction = mixer.clipAction(clip);
+              }
+            });
+            if (idleAction) idleAction.play();
+          }
+          console.log('[Avatar] preset avatar loaded successfully');
+        } catch (e) {
+          console.error('[Avatar] preset avatar post-setup failed, fallback to default', e);
+          loadRobotModel();
+        }
+      },
+      undefined,
+      (error) => {
+        console.error('[Avatar] failed to load preset model url, fallback to default', error);
+        loadRobotModel();
+      }
+    );
+
+    return;
+  }
+
+  // 3. 自定义上传：使用 raw.scene
+  if (!config || !config.raw || !config.raw.scene) {
+    // 回退到默认模型
+    loadRobotModel();
+    return;
+  }
+
+  const { scene: avatarScene } = config.raw;
+  // clone 一份干净的场景，避免直接把 Proxy / 共享引用塞进 three.js 渲染管线
+  let cloned;
+  try {
+    cloned = avatarScene.clone(true);
+  } catch (e) {
+    console.warn('[Avatar] clone avatar scene failed, fallback to original scene instance', e);
+    cloned = avatarScene;
+  }
+
+  robot = cloned;
+  placeRobotInFrontOfUser(robot);
+  scene.add(robot);
+
+  // 根据映射优先确定关键骨骼名称
+  try {
+    if (config.mapping) {
+      MAPPED_JOINTS = {
+        leftShoulder: config.mapping.leftShoulder || '',
+        leftElbow: config.mapping.leftElbow || '',
+        leftHand: config.mapping.leftHand || '',
+        rightShoulder: config.mapping.rightShoulder || '',
+        rightElbow: config.mapping.rightElbow || '',
+        rightHand: config.mapping.rightHand || '',
+      };
+
+      if (MAPPED_JOINTS.leftHand) LEFT_HAND_NAME = MAPPED_JOINTS.leftHand;
+      if (MAPPED_JOINTS.rightHand) RIGHT_HAND_NAME = MAPPED_JOINTS.rightHand;
+    } else {
+      MAPPED_JOINTS = {
+        leftShoulder: '', leftElbow: '', leftHand: '',
+        rightShoulder: '', rightElbow: '', rightHand: '',
+      };
+    }
+  } catch (e) {
+    console.warn('[Avatar] apply mapping names failed', e);
+  }
+
+  // 像默认模型一样，重建骨骼链、手指、碰撞体和动画
+  try {
+    // 重新收集骨骼名称
+    detectedBoneNames = [];
+    detectedMeshSkeletonBones = [];
+    robot.traverse((child) => {
+      if (child.isBone) detectedBoneNames.push(child.name);
+      if (child.isMesh && child.skeleton) {
+        detectedMeshSkeletonBones.push(child.skeleton.bones.map((b) => b.name));
+      }
+    });
+    console.log('[AVATAR] boneNames:', detectedBoneNames);
+    console.log('[AVATAR] mesh skeleton bones:', detectedMeshSkeletonBones);
+
+  // 重新构建手臂链、手指链和碰撞体等
+  buildArmChainsFromMappingOrAuto();
+    detectFingerBones();
+    buildFingerChains();
+    createDebugHelpers();
+    initBodyColliders();
+
+    // 重新建立动画混合器（若自定义模型带有动画）
+    mixer = null;
+    if (config.raw.gltf && config.raw.gltf.animations && config.raw.gltf.animations.length) {
+      mixer = new THREE.AnimationMixer(robot);
+      console.log(`[AVATAR] found ${config.raw.gltf.animations.length} animations`);
+      idleAction = null;
+      walkAction = null;
+      config.raw.gltf.animations.forEach((clip) => {
+        const lowerName = clip.name.toLowerCase();
+        if (lowerName.includes('idle')) idleAction = mixer.clipAction(clip);
+        if (lowerName === 'walking' || (lowerName.includes('walk') && !lowerName.includes('jump') && !lowerName.includes('run'))) {
+          walkAction = mixer.clipAction(clip);
+        }
+      });
+      if (idleAction) idleAction.play();
+    }
+  } catch (e) {
+    console.error('[Avatar] post-setup for custom avatar failed', e);
+  }
 }
 
 function setupControllers() {
@@ -731,7 +966,6 @@ function resetArmsToDownPose() {
   } catch (e) {}
 }
 
-
 // 尝试以健壮的方式查找骨骼：优先精确名 -> 精确匹配检测名 -> 包含匹配 -> mesh skeleton bones -> 遍历搜索
 function findBone(root, preferredName, sideHint) {
   if (!root) return null;
@@ -853,6 +1087,67 @@ function buildArmChains() {
   // 计算链信息（长度、rest 世界位置）
   leftArmChainInfo = buildChainInfo(leftArmChain);
   rightArmChainInfo = buildChainInfo(rightArmChain);
+}
+
+// 基于映射优先构建 IK 手臂链：
+// - 若用户在映射中提供了 leftShoulder/leftElbow/leftHand 等，则严格按映射构造链
+// - 否则回退到原有的自动推断 buildArmChains()
+function buildArmChainsFromMappingOrAuto() {
+  leftArmChain = [];
+  rightArmChain = [];
+
+  if (!robot) {
+    leftArmChainInfo = buildChainInfo([]);
+    rightArmChainInfo = buildChainInfo([]);
+    return;
+  }
+
+  const hasLeftMapped = MAPPED_JOINTS && MAPPED_JOINTS.leftShoulder && MAPPED_JOINTS.leftElbow && MAPPED_JOINTS.leftHand;
+  const hasRightMapped = MAPPED_JOINTS && MAPPED_JOINTS.rightShoulder && MAPPED_JOINTS.rightElbow && MAPPED_JOINTS.rightHand;
+
+  // 左臂：按映射 shoulder -> elbow -> hand
+  if (hasLeftMapped) {
+    const s = robot.getObjectByName(MAPPED_JOINTS.leftShoulder);
+    const e = robot.getObjectByName(MAPPED_JOINTS.leftElbow);
+    const h = robot.getObjectByName(MAPPED_JOINTS.leftHand);
+    if (s && e && h) {
+      leftArmChain = [s, e, h];
+      console.log('[IK] Left arm chain from mapping:', leftArmChain.map(b => b.name));
+    } else {
+      console.warn('[IK] Left mapped joints not all found, fallback to auto chain', {
+        shoulder: !!s,
+        elbow: !!e,
+        hand: !!h,
+      });
+    }
+  }
+
+  // 右臂：按映射 shoulder -> elbow -> hand
+  if (hasRightMapped) {
+    const s = robot.getObjectByName(MAPPED_JOINTS.rightShoulder);
+    const e = robot.getObjectByName(MAPPED_JOINTS.rightElbow);
+    const h = robot.getObjectByName(MAPPED_JOINTS.rightHand);
+    if (s && e && h) {
+      rightArmChain = [s, e, h];
+      console.log('[IK] Right arm chain from mapping:', rightArmChain.map(b => b.name));
+    } else {
+      console.warn('[IK] Right mapped joints not all found, fallback to auto chain', {
+        shoulder: !!s,
+        elbow: !!e,
+        hand: !!h,
+      });
+    }
+  }
+
+  // 当任一侧未能成功从映射构造时，使用原有自动推断补全
+  const needAuto = leftArmChain.length === 0 || rightArmChain.length === 0;
+  if (needAuto) {
+    console.log('[IK] Using auto arm chain builder for missing side(s)');
+    buildArmChains();
+  } else {
+    leftArmChainInfo = buildChainInfo(leftArmChain);
+    rightArmChainInfo = buildChainInfo(rightArmChain);
+  }
 }
 
 function buildChainInfo(chain) {
@@ -1158,8 +1453,6 @@ function solveFABRIK(chainInfo, targetWorldPos, maxIter = 10, threshold = 0.02) 
     const angle = Math.acos(dot);
     if (angle < 1e-3) continue;
     const axis = new THREE.Vector3().crossVectors(curDir, desiredDir).normalize();
-    if (axis.length() < 1e-6) continue;
-    const qRot = new THREE.Quaternion().setFromAxisAngle(axis, angle);
 
     // apply rotation in world space then convert to local
     const qJointWorld = new THREE.Quaternion();

@@ -1,0 +1,20 @@
+[
+  {
+    "id": "default",
+    "name": "默认机器人 (RobotExpressive)",
+    "modelUrl": "/models/RobotExpressive.glb",
+    "mapping": {
+      "leftHand": "mixamorigLeftHand",
+      "rightHand": "mixamorigRightHand"
+    }
+  },
+  {
+    "id": "lowpoly",
+    "name": "低模人形机器人",
+    "modelUrl": "/models/low_poly_humanoid_robot.glb",
+    "mapping": {
+      "leftHand": "mixamorigLeftHand",
+      "rightHand": "mixamorigRightHand"
+    }
+  }
+]
