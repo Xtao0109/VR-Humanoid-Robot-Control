@@ -95,13 +95,18 @@ let leftJoystickAxes = { x: 0, y: 0 }; // 左摇杆输入
 let robotVelocity = new THREE.Vector3(); // 机器人移动速度
 const ROBOT_WALK_SPEED = 1.5; // 机器人行走速度 (米/秒)
 const ROBOT_TURN_SPEED = 2.0; // 机器人转向速度 (弧度/秒)
-// 手臂 1:1 跟随增益（>1 提大幅度，可分别调节 XYZ）
-// 为了让体感更接近 1:1，这里比之前略微放大了一些
-const FOLLOW_GAIN = new THREE.Vector3(2.0, 2.5, -2.0); // Z 反转以匹配机器人前向
-// 额外的上举增益（当用户明显向上举手时再给一点纵向放大）
-// 提高 Y 方向抬手的响应，让上下移动更跟手
+
+// === 人类手臂长度估算（用于比例缩放）===
+// 标准人类手臂长度约 0.55-0.65m，这里取中间值
+const HUMAN_ARM_LENGTH = 0.60; // 米
+
+// 手臂跟随增益
+// 因为已经有 IK 比例缩放，这里应该接近 1:1
+// X: 左右方向，Y: 上下方向，Z: 前后方向（负值因为用户面向+Z，机器人面向-Z）
+const FOLLOW_GAIN = new THREE.Vector3(1.0, 1.0, -1.0);
+// 上举增益 - 既然 IK 已经正确缩放，不需要额外放大
 const Y_UP_THRESHOLD = 0.25; // m，相对相机的上举增量超过该值时开始加成
-const Y_UP_BOOST = 1.4;      // 额外乘上的系数
+const Y_UP_BOOST = 1.0;      // 改为 1.0，不额外放大
 // 校准时“手臂下垂”初始姿势的左右/前向偏移（米）
 const CALIB_SIDE_OFFSET = 0.35;   // 向身体两侧再放一点，避免双手靠得太近
 const CALIB_FORWARD_OFFSET = 0.0; // 不向前探，避免在腹前相互靠近
@@ -1262,7 +1267,7 @@ function buildArmChainsFromMappingOrAuto() {
     const hand = robot.getObjectByName(MAPPED_JOINTS.leftHand);
     if (shoulder && upperArm && lowerArm && hand) {
       leftArmChain = [shoulder, upperArm, lowerArm, hand];
-      console.log('[IK] Left arm chain from mapping:', leftArmChain.map(b => b.name));
+      console.log('[IK] Left arm chain from mapping (4 bones):', leftArmChain.map(b => b.name));
     } else {
       console.warn('[IK] Left mapped joints not all found, fallback to auto chain', {
         shoulder: !!shoulder,
@@ -2054,6 +2059,7 @@ function updateRobotLocomotion(delta) {
 // - elbow: 实际是 LowerArm（小臂/前臂），控制肘关节弯曲
 // - hand: 手掌/手腕骨骼，作为 IK 的目标末端
 // - targetPos: 目标世界坐标位置
+let _lastIKLogTime = 0;
 function simpleTwoJointIK(shoulder, elbow, hand, targetPos) {
   if (!shoulder || !elbow || !hand) return false;
   
@@ -2070,71 +2076,132 @@ function simpleTwoJointIK(shoulder, elbow, hand, targetPos) {
   const lowerArmLen = elbowPos.distanceTo(handPos);
   const totalLen = upperArmLen + lowerArmLen;
   
-  // 从肩膀到目标的距离
+  // 如果骨骼长度无效，跳过
+  if (upperArmLen < 0.001 || lowerArmLen < 0.001) return false;
+  
+  // 从肩膀到目标的向量和距离
   const toTarget = targetPos.clone().sub(shoulderPos);
-  const targetDist = toTarget.length();
+  const originalTargetDist = toTarget.length(); // 保存原始距离（人类手臂距离）
   
-  // 如果目标太远，限制到最大长度的100%（允许完全伸直）
-  const maxReach = totalLen * 1.0;
+  // === 关键：按机器人手臂与人类手臂的比例缩放目标距离 ===
+  // 这样人类手臂完全伸展时，机器人手臂也完全伸展
+  // 人类手臂弯曲50%时，机器人手臂也弯曲50%
+  const armRatio = totalLen / HUMAN_ARM_LENGTH;
+  let targetDist = originalTargetDist * armRatio;
+  
+  // 限制目标距离在可达范围内
+  const maxReach = (upperArmLen + lowerArmLen) * 0.999; // 稍微小于最大以避免数值问题
+  const minReach = Math.abs(upperArmLen - lowerArmLen) * 1.001; // 稍微大于最小
+  
+  const wasClampedMax = targetDist > maxReach;
+  const wasClampedMin = targetDist < minReach;
+  
   if (targetDist > maxReach) {
-    toTarget.setLength(maxReach);
-    targetPos = shoulderPos.clone().add(toTarget);
+    targetDist = maxReach;
+    toTarget.setLength(targetDist);
   }
-  
-  // 如果目标太近，也限制一下（避免手臂反折），但保留更小的最小距离以提高幅度
-  const minReach = totalLen * 0.05;
   if (targetDist < minReach) {
-    toTarget.setLength(minReach);
-    targetPos = shoulderPos.clone().add(toTarget);
+    targetDist = minReach;
+    toTarget.setLength(targetDist);
   }
   
-  // === 第一步：旋转肩膀，让上臂大致指向目标 ===
-  const shoulderDir = toTarget.clone().normalize();
-  const currentUpperArmDir = elbowPos.clone().sub(shoulderPos).normalize();
+  // === 使用余弦定理计算肘部弯曲角度 ===
+  // 三角形：肩膀 - 肘部 - 手掌，已知三边长度
+  // a = lowerArmLen (肘到手)
+  // b = upperArmLen (肩到肘)  
+  // c = targetDist (肩到目标/手)
+  // 用余弦定理求肘部内角
+  const a = lowerArmLen;
+  const b = upperArmLen;
+  const c = targetDist;
   
-  // 计算旋转轴和角度
-  const rotAxis = new THREE.Vector3().crossVectors(currentUpperArmDir, shoulderDir);
-  if (rotAxis.length() > 0.001) {
-    rotAxis.normalize();
-    const rotAngle = Math.acos(THREE.MathUtils.clamp(currentUpperArmDir.dot(shoulderDir), -1, 1));
+  // cos(肘部角) = (a² + b² - c²) / (2ab)
+  let cosElbowAngle = (a * a + b * b - c * c) / (2 * a * b);
+  cosElbowAngle = THREE.MathUtils.clamp(cosElbowAngle, -1, 1);
+  const elbowAngle = Math.acos(cosElbowAngle); // 肘部内角（弯曲程度）
+  
+  // cos(肩部角) = (b² + c² - a²) / (2bc)  
+  let cosShoulderAngle = (b * b + c * c - a * a) / (2 * b * c);
+  cosShoulderAngle = THREE.MathUtils.clamp(cosShoulderAngle, -1, 1);
+  const shoulderAngle = Math.acos(cosShoulderAngle); // 肩膀处上臂与目标方向的夹角
+
+  // === 调试输出 ===
+  const now = performance.now();
+  if (now - _lastIKLogTime > 2000) { // 每2秒输出一次
+    _lastIKLogTime = now;
+    const elbowAngleDeg = (elbowAngle * 180 / Math.PI).toFixed(1);
+    const shoulderAngleDeg = (shoulderAngle * 180 / Math.PI).toFixed(1);
+    console.log(`[IK调试] 骨骼: ${shoulder.name} → ${elbow.name} → ${hand.name}`);
+    console.log(`[IK调试] 大臂长=${b.toFixed(3)}m, 小臂长=${a.toFixed(3)}m, 总长=${totalLen.toFixed(3)}m`);
+    console.log(`[IK调试] 人类手臂参考长度=${HUMAN_ARM_LENGTH}m, 缩放比例=${armRatio.toFixed(3)}`);
+    console.log(`[IK调试] 目标距离: 人类手=${originalTargetDist.toFixed(3)}m, 缩放后=${(originalTargetDist * armRatio).toFixed(3)}m, 最终=${c.toFixed(3)}m`);
+    console.log(`[IK调试] 距离被限制: ${wasClampedMax ? '超出最大' : wasClampedMin ? '小于最小' : '正常范围'}`);
+    console.log(`[IK调试] 计算角度: 肘部内角=${elbowAngleDeg}°, 肩部角=${shoulderAngleDeg}°`);
+    console.log(`[IK调试] 肘部弯曲程度: ${(180 - parseFloat(elbowAngleDeg)).toFixed(1)}° (180°=伸直, 0°=完全折叠)`);
+    console.log('---');
+  }
+
+  // === 第一步：旋转肩膀（大臂）===
+  // 目标方向
+  const targetDir = toTarget.clone().normalize();
+  
+  // 计算肘部应该在的位置（需要考虑弯曲方向）
+  // 使用一个"肘部提示向量"来确定弯曲平面，通常肘部向后/向外弯曲
+  // 这里使用一个简单的策略：肘部倾向于向后下方弯曲
+  const worldUp = new THREE.Vector3(0, 1, 0);
+  let bendAxis = new THREE.Vector3().crossVectors(targetDir, worldUp);
+  if (bendAxis.length() < 0.001) {
+    // 如果目标方向与上方平行，使用前向作为弯曲轴
+    bendAxis.set(0, 0, 1);
+  }
+  bendAxis.normalize();
+  
+  // 从目标方向旋转 shoulderAngle 得到上臂方向
+  const upperArmDir = targetDir.clone();
+  const shoulderRotQuat = new THREE.Quaternion().setFromAxisAngle(bendAxis, shoulderAngle);
+  upperArmDir.applyQuaternion(shoulderRotQuat);
+  
+  // 计算肘部目标位置
+  const elbowTargetPos = shoulderPos.clone().add(upperArmDir.multiplyScalar(upperArmLen));
+  
+  // 旋转肩膀使上臂指向肘部目标位置
+  const currentUpperArmDir = elbowPos.clone().sub(shoulderPos).normalize();
+  const newUpperArmDir = elbowTargetPos.clone().sub(shoulderPos).normalize();
+  
+  const shoulderRotAxis = new THREE.Vector3().crossVectors(currentUpperArmDir, newUpperArmDir);
+  if (shoulderRotAxis.length() > 0.0001) {
+    shoulderRotAxis.normalize();
+    const shoulderRotAngle = Math.acos(THREE.MathUtils.clamp(currentUpperArmDir.dot(newUpperArmDir), -1, 1));
     
-    // 应用旋转（使用平滑插值避免抖动）
-    const rot = new THREE.Quaternion().setFromAxisAngle(rotAxis, rotAngle);
+    const rot = new THREE.Quaternion().setFromAxisAngle(shoulderRotAxis, shoulderRotAngle);
     const shoulderWorldQuat = new THREE.Quaternion();
     shoulder.getWorldQuaternion(shoulderWorldQuat);
     const newWorldQuat = rot.multiply(shoulderWorldQuat);
     
-    // 转换到局部空间
     const parent = shoulder.parent || robot;
     const parentWorldQuat = new THREE.Quaternion();
     parent.getWorldQuaternion(parentWorldQuat);
     const localQuat = parentWorldQuat.clone().invert().multiply(newWorldQuat);
     
-    // 立即应用以提高灵敏度（去除插值延迟）
     shoulder.quaternion.copy(localQuat);
     shoulder.updateMatrixWorld(true);
   }
   
-  // === 第二步：旋转肘部，让手掌尽量靠近目标 ===
-  // 重新计算位置（肩膀已旋转）
+  // === 第二步：旋转肘部（小臂）===
+  // 重新获取更新后的位置
   elbow.getWorldPosition(elbowPos);
   hand.getWorldPosition(handPos);
   
-  const elbowToTarget = targetPos.clone().sub(elbowPos);
-  const elbowToHand = handPos.clone().sub(elbowPos);
-  const elbowDir = elbowToTarget.clone().normalize();
-  const currentLowerArmDir = elbowToHand.clone().normalize();
+  // 小臂当前方向和目标方向
+  const currentLowerArmDir = handPos.clone().sub(elbowPos).normalize();
+  const targetLowerArmDir = targetPos.clone().sub(elbowPos).normalize();
   
-  const elbowRotAxis = new THREE.Vector3().crossVectors(currentLowerArmDir, elbowDir);
-  if (elbowRotAxis.length() > 0.001) {
+  const elbowRotAxis = new THREE.Vector3().crossVectors(currentLowerArmDir, targetLowerArmDir);
+  if (elbowRotAxis.length() > 0.0001) {
     elbowRotAxis.normalize();
-    const elbowRotAngle = Math.acos(THREE.MathUtils.clamp(currentLowerArmDir.dot(elbowDir), -1, 1));
+    const elbowRotAngle = Math.acos(THREE.MathUtils.clamp(currentLowerArmDir.dot(targetLowerArmDir), -1, 1));
     
-    // 限制肘部弯曲角度（避免反折）
-    const maxElbowAngle = Math.PI * 0.8; // 最多弯曲144度
-    const clampedAngle = Math.min(elbowRotAngle, maxElbowAngle);
-    
-    const elbowRot = new THREE.Quaternion().setFromAxisAngle(elbowRotAxis, clampedAngle);
+    const elbowRot = new THREE.Quaternion().setFromAxisAngle(elbowRotAxis, elbowRotAngle);
     const elbowWorldQuat = new THREE.Quaternion();
     elbow.getWorldQuaternion(elbowWorldQuat);
     const newElbowWorldQuat = elbowRot.multiply(elbowWorldQuat);
@@ -2143,12 +2210,10 @@ function simpleTwoJointIK(shoulder, elbow, hand, targetPos) {
     const elbowParentWorldQuat = new THREE.Quaternion();
     elbowParent.getWorldQuaternion(elbowParentWorldQuat);
     const elbowLocalQuat = elbowParentWorldQuat.clone().invert().multiply(newElbowWorldQuat);
-    // 立即应用以提高灵敏度
+    
     elbow.quaternion.copy(elbowLocalQuat);
     elbow.updateMatrixWorld(true);
   }
-  
-  // 注意：我们不操作 hand 骨骼，让它保持动画的原始姿态
   
   return true;
 }
@@ -2184,11 +2249,6 @@ function handleLeftHandFollow() {
   // 若该控制器几乎未移动，避免对另一只手造成“类似运动”的错觉
   if (baseDeltaUser.lengthSq() < 1e-4) return;
   const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-  if (now - lastLeftLogTime > 600) {
-    const deltaStr = `${baseDeltaUser.x.toFixed(3)}, ${baseDeltaUser.y.toFixed(3)}, ${baseDeltaUser.z.toFixed(3)}`;
-    showDebug(`[LeftFollow] deltaUser=${deltaStr} controller=${activeController.uuid || 'n/a'}`, true);
-    lastLeftLogTime = now;
-  }
   // 增益（含上举增强）
   const yGain = baseDeltaUser.y > Y_UP_THRESHOLD ? (FOLLOW_GAIN.y * Y_UP_BOOST) : FOLLOW_GAIN.y;
   const deltaUserGained = new THREE.Vector3(
@@ -2203,6 +2263,13 @@ function handleLeftHandFollow() {
   const deltaRobotLocal = deltaWorld.clone().applyQuaternion(robotInv);
   // RobotExpressive 在加载时旋转了 180°（面向 -Z），需要翻转本地 Z 轴以保持“向前”一致
   deltaRobotLocal.z *= -1;
+  
+  if (now - lastLeftLogTime > 1000) {
+    console.log(`[左手] 用户偏移: x=${baseDeltaUser.x.toFixed(3)}, y=${baseDeltaUser.y.toFixed(3)}, z=${baseDeltaUser.z.toFixed(3)}`);
+    console.log(`[左手] 机器人本地偏移: x=${deltaRobotLocal.x.toFixed(3)}, y=${deltaRobotLocal.y.toFixed(3)}, z=${deltaRobotLocal.z.toFixed(3)}`);
+    lastLeftLogTime = now;
+  }
+  
   const headLocalCurrent = getHeadLocalPosition(new THREE.Vector3());
   const baseLocal = headLocalCurrent.clone().add(leftHandOffsetFromHeadLocal);
   const targetLocal = baseLocal.add(deltaRobotLocal);
@@ -2222,13 +2289,23 @@ function handleLeftHandFollow() {
     const shoulder = leftArmChain[1]; // UpperArmL - 大臂，控制肩部旋转
     const elbow = leftArmChain[2];    // LowerArmL - 小臂，控制肘部弯曲
     const hand = leftArmChain[3];     // Hand - 手掌，IK 目标末端
+    if (now - lastLeftLogTime > 1000) {
+      console.log('[IK-L] 4-bone chain, using [1,2,3]:', shoulder?.name, elbow?.name, hand?.name);
+    }
     simpleTwoJointIK(shoulder, elbow, hand, adjustedTarget);
   } else if (leftArmChain && leftArmChain.length === 3) {
     // 兼容没有 Shoulder 的 3 段链：UpperArm, LowerArm, Hand
     const shoulder = leftArmChain[0];
     const elbow = leftArmChain[1];
     const hand = leftArmChain[2];
+    if (now - lastLeftLogTime > 1000) {
+      console.log('[IK-L] 3-bone chain, using [0,1,2]:', shoulder?.name, elbow?.name, hand?.name);
+    }
     simpleTwoJointIK(shoulder, elbow, hand, adjustedTarget);
+  } else {
+    if (now - lastLeftLogTime > 1000) {
+      console.warn('[IK-L] No valid arm chain! length=', leftArmChain?.length);
+    }
   }
 }
 
@@ -2261,11 +2338,6 @@ function handleRightHandFollow() {
   const baseDeltaUserR = currentLocalUserR.sub(rightControllerInitialLocalUser);
   if (baseDeltaUserR.lengthSq() < 1e-4) return;
   const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-  if (now - lastRightLogTime > 600) {
-    const deltaStr = `${baseDeltaUserR.x.toFixed(3)}, ${baseDeltaUserR.y.toFixed(3)}, ${baseDeltaUserR.z.toFixed(3)}`;
-    showDebug(`[RightFollow] deltaUser=${deltaStr} controller=${activeController.uuid || 'n/a'}`, true);
-    lastRightLogTime = now;
-  }
   const yGainR = baseDeltaUserR.y > Y_UP_THRESHOLD ? (FOLLOW_GAIN.y * Y_UP_BOOST) : FOLLOW_GAIN.y;
   const deltaUserGainedR = new THREE.Vector3(
     baseDeltaUserR.x * FOLLOW_GAIN.x,
@@ -2276,6 +2348,13 @@ function handleRightHandFollow() {
   const robotInvR = robot.quaternion.clone().invert();
   const deltaRobotLocalR = deltaWorldR.clone().applyQuaternion(robotInvR);
   deltaRobotLocalR.z *= -1;
+  
+  if (now - lastRightLogTime > 1000) {
+    console.log(`[右手] 用户偏移: x=${baseDeltaUserR.x.toFixed(3)}, y=${baseDeltaUserR.y.toFixed(3)}, z=${baseDeltaUserR.z.toFixed(3)}`);
+    console.log(`[右手] 机器人本地偏移: x=${deltaRobotLocalR.x.toFixed(3)}, y=${deltaRobotLocalR.y.toFixed(3)}, z=${deltaRobotLocalR.z.toFixed(3)}`);
+    lastRightLogTime = now;
+  }
+  
   const headLocalCurrentR = getHeadLocalPosition(new THREE.Vector3());
   const baseLocalR = headLocalCurrentR.clone().add(rightHandOffsetFromHeadLocal);
   const targetLocalR = baseLocalR.add(deltaRobotLocalR);
@@ -2293,13 +2372,23 @@ function handleRightHandFollow() {
     const shoulder = rightArmChain[1]; // UpperArmR - 大臂，控制肩部旋转
     const elbow = rightArmChain[2];    // LowerArmR - 小臂，控制肘部弯曲
     const hand = rightArmChain[3];     // Hand - 手掌，IK 目标末端
+    if (now - lastRightLogTime > 1000) {
+      console.log('[IK-R] 4-bone chain, using [1,2,3]:', shoulder?.name, elbow?.name, hand?.name);
+    }
     simpleTwoJointIK(shoulder, elbow, hand, adjustedTarget);
   } else if (rightArmChain && rightArmChain.length === 3) {
     // 兼容没有 Shoulder 的 3 段链：UpperArm, LowerArm, Hand
     const shoulder = rightArmChain[0];
     const elbow = rightArmChain[1];
     const hand = rightArmChain[2];
+    if (now - lastRightLogTime > 1000) {
+      console.log('[IK-R] 3-bone chain, using [0,1,2]:', shoulder?.name, elbow?.name, hand?.name);
+    }
     simpleTwoJointIK(shoulder, elbow, hand, adjustedTarget);
+  } else {
+    if (now - lastRightLogTime > 1000) {
+      console.warn('[IK-R] No valid arm chain! length=', rightArmChain?.length);
+    }
   }
 }
 
