@@ -1,13 +1,21 @@
 // 类型与常量定义：描述逻辑关节与映射配置
+// 
+// 逻辑关节命名对应原始 RobotExpressive 模型的骨骼结构：
+// - shoulder: 肩部 (ShoulderL/R)
+// - upperArm: 大臂 (UpperArmL/R)
+// - lowerArm: 小臂 (LowerArmL/R)
+// - hand: 手掌 (Palm2L/R 等)
 
 export const LOGICAL_JOINTS = [
   'head',
   'spine',
   'leftShoulder',
-  'leftElbow',
+  'leftUpperArm',
+  'leftLowerArm',
   'leftHand',
   'rightShoulder',
-  'rightElbow',
+  'rightUpperArm',
+  'rightLowerArm',
   'rightHand',
 ];
 

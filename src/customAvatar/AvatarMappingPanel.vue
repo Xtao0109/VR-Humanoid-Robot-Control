@@ -74,6 +74,8 @@ const bonesSummary = ref([]);
 const modelUrl = ref('');
 const localMapping = ref(createEmptyMapping());
 const lastLoaded = ref(null); // { gltf, scene, bones, nodes }
+const lastFileData = ref(null); // ArrayBuffer - 原始文件数据，用于持久化存储
+const lastFileName = ref('');   // 原始文件名
 
 async function onFileChange(event) {
   const file = event.target.files && event.target.files[0];
@@ -83,7 +85,12 @@ async function onFileChange(event) {
   loading.value = true;
 
   try {
-    // 通过 blob URL 加载本地文件
+    // 1. 读取文件为 ArrayBuffer（用于后续存储到 IndexedDB）
+    const arrayBuffer = await file.arrayBuffer();
+    lastFileData.value = arrayBuffer;
+    lastFileName.value = file.name;
+
+    // 2. 通过 blob URL 加载本地文件（用于 three.js 解析）
     const url = URL.createObjectURL(file);
     const result = await loadAvatarModel(url);
 
@@ -96,6 +103,8 @@ async function onFileChange(event) {
   } catch (e) {
     console.error('[AvatarMappingPanel] load error', e);
     error.value = e?.message || '模型加载失败';
+    lastFileData.value = null;
+    lastFileName.value = '';
   } finally {
     loading.value = false;
   }
@@ -117,6 +126,9 @@ function emitConfirm() {
     url: modelUrl.value,
     mapping: { ...localMapping.value },
     raw: lastLoaded.value,
+    // 新增：传递原始文件数据，供 ConfigApp 存入 IndexedDB
+    fileData: lastFileData.value,
+    fileName: lastFileName.value,
   });
 }
 </script>

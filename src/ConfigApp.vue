@@ -50,6 +50,7 @@
 <script setup>
 import { ref, onMounted } from 'vue';
 import AvatarMappingPanel from './customAvatar/AvatarMappingPanel.vue';
+import { saveCustomAvatarFile, clearCustomAvatarFile } from './utils/avatarStorage.js';
 
 const AVATAR_CONFIG_KEY = 'vr_avatar_config_v1';
 
@@ -82,17 +83,32 @@ function applyPreset() {
     localStorage.setItem(AVATAR_CONFIG_KEY, JSON.stringify(stored));
     lastConfig.value = stored;
     console.log('[ConfigApp] preset avatar saved to localStorage', stored);
+    // 使用预设时，清除之前可能存储的自定义模型文件
+    clearCustomAvatarFile().catch(() => {});
   } catch (e) {
     console.error('[ConfigApp] Failed to save preset avatar config', e);
   }
 }
 
-function onAvatarConfirm(payload) {
-  // 这里只存必要的信息：模型URL + 映射 + 简要摘要
+async function onAvatarConfirm(payload) {
+  // 1. 把原始模型文件存入 IndexedDB（支持大文件）
+  if (payload.fileData && payload.fileName) {
+    try {
+      await saveCustomAvatarFile(payload.fileData, payload.fileName);
+      console.log('[ConfigApp] Custom avatar file saved to IndexedDB');
+    } catch (e) {
+      console.error('[ConfigApp] Failed to save file to IndexedDB', e);
+      alert('保存模型文件失败，请重试');
+      return;
+    }
+  }
+
+  // 2. localStorage 只存映射和元信息（不存文件数据）
   const stored = {
-    url: payload.url,
+    // 标记这是自定义上传的模型
+    source: 'custom',
+    fileName: payload.fileName || 'custom.glb',
     mapping: payload.mapping || {},
-    // 可以根据需要扩展，例如存骨骼名字列表用于调试
     meta: {
       savedAt: Date.now(),
     },
@@ -101,7 +117,7 @@ function onAvatarConfirm(payload) {
   try {
     localStorage.setItem(AVATAR_CONFIG_KEY, JSON.stringify(stored));
     lastConfig.value = stored;
-    console.log('[ConfigApp] Avatar config saved to localStorage');
+    console.log('[ConfigApp] Custom avatar config saved to localStorage', stored);
   } catch (e) {
     console.error('[ConfigApp] Failed to save avatar config', e);
   }
