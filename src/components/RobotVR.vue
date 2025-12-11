@@ -2081,13 +2081,7 @@ function simpleTwoJointIK(shoulder, elbow, hand, targetPos) {
   
   // 从肩膀到目标的向量和距离
   const toTarget = targetPos.clone().sub(shoulderPos);
-  const originalTargetDist = toTarget.length(); // 保存原始距离（人类手臂距离）
-  
-  // === 关键：按机器人手臂与人类手臂的比例缩放目标距离 ===
-  // 这样人类手臂完全伸展时，机器人手臂也完全伸展
-  // 人类手臂弯曲50%时，机器人手臂也弯曲50%
-  const armRatio = totalLen / HUMAN_ARM_LENGTH;
-  let targetDist = originalTargetDist * armRatio;
+  let targetDist = toTarget.length();
   
   // 限制目标距离在可达范围内
   const maxReach = (upperArmLen + lowerArmLen) * 0.999; // 稍微小于最大以避免数值问题
@@ -2133,8 +2127,7 @@ function simpleTwoJointIK(shoulder, elbow, hand, targetPos) {
     const shoulderAngleDeg = (shoulderAngle * 180 / Math.PI).toFixed(1);
     console.log(`[IK调试] 骨骼: ${shoulder.name} → ${elbow.name} → ${hand.name}`);
     console.log(`[IK调试] 大臂长=${b.toFixed(3)}m, 小臂长=${a.toFixed(3)}m, 总长=${totalLen.toFixed(3)}m`);
-    console.log(`[IK调试] 人类手臂参考长度=${HUMAN_ARM_LENGTH}m, 缩放比例=${armRatio.toFixed(3)}`);
-    console.log(`[IK调试] 目标距离: 人类手=${originalTargetDist.toFixed(3)}m, 缩放后=${(originalTargetDist * armRatio).toFixed(3)}m, 最终=${c.toFixed(3)}m`);
+    console.log(`[IK调试] 目标距离=${c.toFixed(3)}m, 最大可达=${maxReach.toFixed(3)}m`);
     console.log(`[IK调试] 距离被限制: ${wasClampedMax ? '超出最大' : wasClampedMin ? '小于最小' : '正常范围'}`);
     console.log(`[IK调试] 计算角度: 肘部内角=${elbowAngleDeg}°, 肩部角=${shoulderAngleDeg}°`);
     console.log(`[IK调试] 肘部弯曲程度: ${(180 - parseFloat(elbowAngleDeg)).toFixed(1)}° (180°=伸直, 0°=完全折叠)`);
@@ -2264,9 +2257,16 @@ function handleLeftHandFollow() {
   // RobotExpressive 在加载时旋转了 180°（面向 -Z），需要翻转本地 Z 轴以保持“向前”一致
   deltaRobotLocal.z *= -1;
   
+  // 根据机器人手臂长度与人类手臂长度的比例缩放用户位移
+  // 这样用户的小幅移动在大机器人上也能产生相应幅度的移动
+  const robotArmLen = leftArmChainInfo?.total || HUMAN_ARM_LENGTH;
+  const scaleRatio = robotArmLen / HUMAN_ARM_LENGTH;
+  deltaRobotLocal.multiplyScalar(scaleRatio);
+  
   if (now - lastLeftLogTime > 1000) {
     console.log(`[左手] 用户偏移: x=${baseDeltaUser.x.toFixed(3)}, y=${baseDeltaUser.y.toFixed(3)}, z=${baseDeltaUser.z.toFixed(3)}`);
     console.log(`[左手] 机器人本地偏移: x=${deltaRobotLocal.x.toFixed(3)}, y=${deltaRobotLocal.y.toFixed(3)}, z=${deltaRobotLocal.z.toFixed(3)}`);
+    console.log(`[左手] 手臂长度缩放: robotArmLen=${robotArmLen.toFixed(3)}, scaleRatio=${scaleRatio.toFixed(3)}`);
     lastLeftLogTime = now;
   }
   
@@ -2349,9 +2349,16 @@ function handleRightHandFollow() {
   const deltaRobotLocalR = deltaWorldR.clone().applyQuaternion(robotInvR);
   deltaRobotLocalR.z *= -1;
   
+  // 根据机器人手臂长度与人类手臂长度的比例缩放用户位移
+  // 这样用户的小幅移动在大机器人上也能产生相应幅度的移动
+  const robotArmLenR = rightArmChainInfo?.total || HUMAN_ARM_LENGTH;
+  const scaleRatioR = robotArmLenR / HUMAN_ARM_LENGTH;
+  deltaRobotLocalR.multiplyScalar(scaleRatioR);
+  
   if (now - lastRightLogTime > 1000) {
     console.log(`[右手] 用户偏移: x=${baseDeltaUserR.x.toFixed(3)}, y=${baseDeltaUserR.y.toFixed(3)}, z=${baseDeltaUserR.z.toFixed(3)}`);
     console.log(`[右手] 机器人本地偏移: x=${deltaRobotLocalR.x.toFixed(3)}, y=${deltaRobotLocalR.y.toFixed(3)}, z=${deltaRobotLocalR.z.toFixed(3)}`);
+    console.log(`[右手] 手臂长度缩放: robotArmLen=${robotArmLenR.toFixed(3)}, scaleRatio=${scaleRatioR.toFixed(3)}`);
     lastRightLogTime = now;
   }
   
