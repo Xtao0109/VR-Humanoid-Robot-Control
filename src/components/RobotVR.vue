@@ -8,6 +8,7 @@ import { ref, onMounted, onUnmounted } from 'vue';
 import { VRButton } from '../VRButton.js'; 
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { loadCustomAvatarFile, createBlobUrlFromArrayBuffer } from '../utils/avatarStorage.js';
+import { createRecordingManager } from '../utils/recordingManager.js';
 // VR 控制页不再内嵌 AvatarMappingPanel，改由独立配置页负责上传和映射
 
 const container = ref(null);
@@ -86,6 +87,7 @@ const headWorldTemp = new THREE.Vector3();
 const headLocalTemp = new THREE.Vector3();
 let lastLeftLogTime = 0;
 let lastRightLogTime = 0;
+const recordingManager = createRecordingManager();
 
 // 镜像视图相关
 let mirrorCamera, mirrorRenderer;
@@ -122,6 +124,16 @@ function showDebug(message, allowRepeat = false) {
   console.log(`[DEBUG] ${message}`);
 }
 
+function getActiveAvatarName() {
+  const config = currentAvatarConfig.value;
+  if (!config) return 'RobotExpressive';
+  if (config.meta && config.meta.displayName) return config.meta.displayName;
+  if (config.fileName) return config.fileName;
+  if (config.presetId) return config.presetId;
+  if (config.modelUrl) return config.modelUrl.split('/').pop();
+  return 'CustomAvatar';
+}
+
 // 简单的提示覆盖层（仅用于校准提示，不属于调试面板）
 let hintDiv = null;
 function showHint(text) {
@@ -144,6 +156,18 @@ let vrDebugPanel = null;
 let vrDebugTexture = null;
 let vrDebugCanvas = null;
 let vrDebugCtx = null;
+const CHINESE_NUMERAL = ['零','一','二','三','四','五','六','七','八','九','十'];
+
+function formatRecordLabel(count) {
+  if (!count) return '未记录';
+  if (count > 0 && count <= 10) {
+    return `第${CHINESE_NUMERAL[count]}次记录`;
+  }
+  return `第${count}次记录`;
+}
+
+let recordCount = 0;
+let lastRecordLabel = formatRecordLabel(0);
 
 function createVRDebugPanel() {
   // 创建用于绘制文字的 Canvas
@@ -275,6 +299,77 @@ function placeRobotInFrontOfUser(robotObject) {
   console.log('[VR] Robot placed at:', robotObject.position.toArray());
 }
 
+function setupRecordingManager() {
+  const resolveArmJoint = (chain, joint) => {
+    if (!chain || !chain.length) return null;
+    if (chain.length >= 4) {
+      if (joint === 'shoulder') return chain[0];
+      if (joint === 'upperArm') return chain[1];
+      if (joint === 'lowerArm') return chain[2];
+      if (joint === 'hand') return chain[3];
+    }
+    if (chain.length === 3) {
+      if (joint === 'upperArm') return chain[0];
+      if (joint === 'lowerArm') return chain[1];
+      if (joint === 'hand') return chain[2];
+      return null;
+    }
+    if (chain.length === 2) {
+      if (joint === 'upperArm') return chain[0];
+      if (joint === 'hand') return chain[1];
+      return null;
+    }
+    if (chain.length === 1) {
+      if (joint === 'hand' || joint === 'upperArm') return chain[0];
+      return null;
+    }
+    return null;
+  };
+
+  recordCount = 0;
+  lastRecordLabel = formatRecordLabel(recordCount);
+
+  recordingManager.init(
+    {
+      renderer,
+      getUserHeadObject: () => camera,
+      getControllerObject: (hand) => getControllerByHand(hand),
+      getRobotPart: (part) => {
+        if (part === 'head') return robotHead;
+        if (part === 'leftShoulder') return resolveArmJoint(leftArmChain, 'shoulder');
+        if (part === 'leftUpperArm') return resolveArmJoint(leftArmChain, 'upperArm');
+        if (part === 'leftLowerArm') return resolveArmJoint(leftArmChain, 'lowerArm');
+        if (part === 'leftHand') return resolveArmJoint(leftArmChain, 'hand');
+        if (part === 'rightShoulder') return resolveArmJoint(rightArmChain, 'shoulder');
+        if (part === 'rightUpperArm') return resolveArmJoint(rightArmChain, 'upperArm');
+        if (part === 'rightLowerArm') return resolveArmJoint(rightArmChain, 'lowerArm');
+        if (part === 'rightHand') return resolveArmJoint(rightArmChain, 'hand');
+        return null;
+      },
+    },
+    {
+      filenamePrefix: 'vr-snapshots',
+      exportPromptMessage: '检测到 VR 记录数据，是否下载 CSV 文件？',
+      metadataProvider: () => ({
+        avatar: getActiveAvatarName(),
+        mirroringActive,
+      }),
+      onCapture: (record) => {
+        recordCount += 1;
+        lastRecordLabel = formatRecordLabel(recordCount);
+        showDebug(`[记录] 捕获 #${record.index} (${record.reason})`, true);
+      },
+      onExport: ({ filename, count }) => {
+        console.log(`[RecordingManager] Exported ${count} records → ${filename}`);
+      },
+    }
+  );
+
+  if (typeof window !== 'undefined') {
+    window.__vrRecordingManager = recordingManager;
+  }
+}
+
 onMounted(async () => {
   // 尝试从 localStorage 读取 Avatar 配置（由配置页写入）
   try {
@@ -321,6 +416,7 @@ onMounted(async () => {
 onUnmounted(() => {
   window.removeEventListener('resize', onWindowResize);
   if (renderer) renderer.setAnimationLoop(null);
+  recordingManager.dispose();
   // 无需移除 PC 调试事件（未注册）
   if (hintDiv) { try { document.body.removeChild(hintDiv); } catch(e){} hintDiv = null; }
 });
@@ -361,6 +457,7 @@ function init() {
       '---------------------',
       'Position: Loading...',
       'Arm Follow: OFF',
+  '记录：' + lastRecordLabel,
       'Model: Loading...'
     ]);
   }
@@ -374,6 +471,8 @@ function init() {
   renderer.outputColorSpace = THREE.SRGBColorSpace; // 修复：使用新版 API
   renderer.xr.enabled = true; // 启用 WebXR
   container.value.appendChild(renderer.domElement);
+
+  setupRecordingManager();
 
   // WebXR 会话生命周期：进入时先进行校准，引导用户按扳机确认
   try {
@@ -1956,9 +2055,12 @@ function updateJoystickInput() {
   }
 }
 
-// 每帧读取 XR 按钮状态，识别双扳机同时按下
-// 已弃用：双扳机检测逻辑（根据用户反馈改回“单扳机确认”），保留空函数占位以便未来扩展
-function updateXRButtons() { /* no-op */ }
+// 每帧读取 XR 按钮状态（当前用于检测握持键触发记录，亦可扩展其他按键逻辑）
+function updateXRButtons() {
+  if (recordingManager && typeof recordingManager.update === 'function') {
+    recordingManager.update();
+  }
+}
 
 // 根据摇杆输入更新机器人位置和朝向
 function updateRobotLocomotion(delta) {
@@ -2488,6 +2590,7 @@ function render() {
       '---------------------',
       `Pos: (${robotPos.x.toFixed(1)}, ${robotPos.y.toFixed(1)}, ${robotPos.z.toFixed(1)})`,
       `Arm Follow: ${armFollowStatus}`,
+  `记录：${lastRecordLabel}`,
       `Model: ${modelName}`
     ]);
   }
