@@ -1,8 +1,9 @@
 import * as THREE from 'three';
+import logger from './logger';
 
 const DEFAULT_SETTINGS = {
   hotkey: 'F9',
-  enableHotkey: true,
+  enableHotkey: false,
   autoExportOnSessionEnd: true,
   autoClearOnExport: false,
   promptOnSessionEnd: true,
@@ -157,7 +158,7 @@ export function createRecordingManager(initialSettings = {}) {
       if (confirmed) {
         exportRecords();
       } else {
-        console.log('[RecordingManager] 用户取消下载记录，可稍后通过 window.__vrRecordingManager.export() 手动导出');
+        logger.info('[RecordingManager] 用户取消下载记录，可稍后通过 window.__vrRecordingManager.export() 手动导出');
       }
       return;
     }
@@ -189,7 +190,7 @@ export function createRecordingManager(initialSettings = {}) {
     deps = initDeps;
     settings = { ...settings, ...initSettings };
     if (!deps || !deps.renderer) {
-      console.warn('[RecordingManager] renderer 未提供，部分功能不可用');
+      logger.warn('[RecordingManager] renderer 未提供，部分功能不可用');
     }
     registerListeners();
     return api;
@@ -236,7 +237,7 @@ export function createRecordingManager(initialSettings = {}) {
       try {
         settings.onCapture(record);
       } catch (err) {
-        console.warn('[RecordingManager] onCapture 回调出错', err);
+        logger.warn('[RecordingManager] onCapture 回调出错', err);
       }
     }
 
@@ -268,7 +269,7 @@ export function createRecordingManager(initialSettings = {}) {
 
   function exportRecords(options = {}) {
     if (!records.length) {
-      console.warn('[RecordingManager] 没有可导出的记录');
+      logger.warn('[RecordingManager] 没有可导出的记录');
       return null;
     }
     const { format = 'csv', filename: customFilename } = options;
@@ -289,7 +290,7 @@ export function createRecordingManager(initialSettings = {}) {
       try {
         settings.onExport({ filename, format, count: records.length });
       } catch (err) {
-        console.warn('[RecordingManager] onExport 回调出错', err);
+        logger.warn('[RecordingManager] onExport 回调出错', err);
       }
     }
 
@@ -310,7 +311,7 @@ export function createRecordingManager(initialSettings = {}) {
       try {
         fn();
       } catch (err) {
-        console.warn('[RecordingManager] 清理监听出现问题', err);
+        logger.warn('[RecordingManager] 清理监听出现问题', err);
       }
     }
     clear();

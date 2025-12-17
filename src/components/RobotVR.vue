@@ -9,6 +9,7 @@ import { VRButton } from '../VRButton.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { loadCustomAvatarFile, createBlobUrlFromArrayBuffer } from '../utils/avatarStorage.js';
 import { createRecordingManager } from '../utils/recordingManager.js';
+import logger from '../utils/logger.js';
 // VR 控制页不再内嵌 AvatarMappingPanel，改由独立配置页负责上传和映射
 
 const container = ref(null);
@@ -121,7 +122,7 @@ function showDebug(message, allowRepeat = false) {
     if (_debugSeenMessages.has(message)) return;
     _debugSeenMessages.add(message);
   }
-  console.log(`[DEBUG] ${message}`);
+  logger.debug(`[DEBUG] ${message}`);
 }
 
 function getActiveAvatarName() {
@@ -296,7 +297,7 @@ function placeRobotInFrontOfUser(robotObject) {
   if (robotObject.rotation) {
     robotObject.rotation.y = Math.PI;
   }
-  console.log('[VR] Robot placed at:', robotObject.position.toArray());
+  logger.debug('[VR] Robot placed at:', robotObject.position.toArray());
 }
 
 function setupRecordingManager() {
@@ -360,12 +361,12 @@ function setupRecordingManager() {
         showDebug(`[记录] 捕获 #${record.index} (${record.reason})`, true);
       },
       onExport: ({ filename, count }) => {
-        console.log(`[RecordingManager] Exported ${count} records → ${filename}`);
+        logger.info(`[RecordingManager] Exported ${count} records → ${filename}`);
       },
     }
   );
 
-  if (typeof window !== 'undefined') {
+  if (typeof window !== 'undefined' && import.meta.env.DEV) {
     window.__vrRecordingManager = recordingManager;
   }
 }
@@ -377,11 +378,11 @@ onMounted(async () => {
     if (raw) {
       const parsed = JSON.parse(raw);
       currentAvatarConfig.value = parsed;
-      console.log('[RobotVR] Loaded avatar config from localStorage', parsed);
+  logger.info('[RobotVR] Loaded avatar config from localStorage', parsed);
 
       // 如果是自定义上传的模型，需要从 IndexedDB 加载文件数据
       if (parsed.source === 'custom') {
-        console.log('[RobotVR] Detected custom avatar, loading from IndexedDB...');
+  logger.info('[RobotVR] Detected custom avatar, loading from IndexedDB...');
         try {
           const fileRecord = await loadCustomAvatarFile();
           if (fileRecord && fileRecord.fileData) {
@@ -393,19 +394,19 @@ onMounted(async () => {
               modelUrl: blobUrl,
               _fromIndexedDB: true,
             };
-            console.log('[RobotVR] Custom avatar file loaded from IndexedDB, blobUrl created');
+            logger.info('[RobotVR] Custom avatar file loaded from IndexedDB, blobUrl created');
           } else {
-            console.warn('[RobotVR] No custom avatar file found in IndexedDB, will fallback to default');
+            logger.warn('[RobotVR] No custom avatar file found in IndexedDB, will fallback to default');
             currentAvatarConfig.value = null;
           }
         } catch (e) {
-          console.error('[RobotVR] Failed to load custom avatar from IndexedDB', e);
+          logger.error('[RobotVR] Failed to load custom avatar from IndexedDB', e);
           currentAvatarConfig.value = null;
         }
       }
     }
   } catch (e) {
-    console.warn('[RobotVR] Failed to read avatar config from localStorage', e);
+  logger.warn('[RobotVR] Failed to read avatar config from localStorage', e);
   }
 
   init();
@@ -422,7 +423,7 @@ onUnmounted(() => {
 });
 
 function init() {
-  console.log('[VR] init() called; ROBOT_MODEL_PATH=', ROBOT_MODEL_PATH);
+  logger.info('[VR] init() called; ROBOT_MODEL_PATH=', ROBOT_MODEL_PATH);
   
   // 显示版本号以确认代码已更新
   setTimeout(() => {
@@ -517,7 +518,7 @@ function init() {
       // 如果只是一个包含 modelUrl + mapping 的轻量配置，则在内部再次用 GLTFLoader 加载
       applyAvatarConfig(currentAvatarConfig.value);
     } catch (e) {
-      console.error('[Avatar] apply avatar on init failed, fallback to default robot', e);
+  logger.error('[Avatar] apply avatar on init failed, fallback to default robot', e);
       loadRobotModel();
     }
   } else {
@@ -547,13 +548,13 @@ function init() {
     ikBlendActive = active;
     if (mixer) {
       if (ikBlendActive) {
-        console.log('[IK] activating IK: fading out animations');
+  logger.debug('[IK] activating IK: fading out animations');
         if (walkAction) walkAction.fadeOut(0.2);
         if (idleAction) idleAction.fadeOut(0.2);
         // freeze fingers to avoid animation-driven penetration
         lockFingers();
       } else {
-        console.log('[IK] deactivating IK: restoring animations');
+  logger.debug('[IK] deactivating IK: restoring animations');
         if (idleAction) { idleAction.reset(); idleAction.fadeIn(0.2); idleAction.play(); }
         if (walkAction) { walkAction.reset(); walkAction.fadeIn(0.2); /* don't necessarily play walk */ }
         // restore fingers
@@ -574,7 +575,7 @@ function loadRobotModel() {
   scene.add(robot);
 
   const loader = new GLTFLoader();
-  console.log('[VR] GLTFLoader starting load for', ROBOT_MODEL_PATH);
+  logger.info('[VR] GLTFLoader starting load for', ROBOT_MODEL_PATH);
   loader.load(
     ROBOT_MODEL_PATH,
     function (gltf) {
@@ -604,9 +605,9 @@ function loadRobotModel() {
     // 导出至全局变量供其它函数调试/查找使用
     detectedBoneNames = boneNames;
     detectedMeshSkeletonBones = meshSkeletonBones;
-    console.log('[MODEL] boneNames:', boneNames);
-    console.log('[MODEL] mesh skeleton bones:', meshSkeletonBones);
-    console.log('[MODEL] resolved LEFT_HAND_NAME=', LEFT_HAND_NAME, ' RIGHT_HAND_NAME=', RIGHT_HAND_NAME);
+  logger.debug('[MODEL] boneNames:', boneNames);
+  logger.debug('[MODEL] mesh skeleton bones:', meshSkeletonBones);
+  logger.debug('[MODEL] resolved LEFT_HAND_NAME=', LEFT_HAND_NAME, ' RIGHT_HAND_NAME=', RIGHT_HAND_NAME);
     // 进一步尝试解析出实际可用的骨骼/节点名称（将用于稳定的运行时查找）
     try {
       // 如果 findBone 可用，尝试找到实际对象并用其 name 作为首选名称
@@ -616,19 +617,19 @@ function loadRobotModel() {
         const rightObj = findBone(robot, RIGHT_HAND_NAME, 'right');
         if (leftObj) LEFT_HAND_NAME = leftObj.name;
         if (rightObj) RIGHT_HAND_NAME = rightObj.name;
-        console.log('[MODEL] final mapped LEFT_HAND_NAME=', LEFT_HAND_NAME, ' RIGHT_HAND_NAME=', RIGHT_HAND_NAME);
+  logger.debug('[MODEL] final mapped LEFT_HAND_NAME=', LEFT_HAND_NAME, ' RIGHT_HAND_NAME=', RIGHT_HAND_NAME);
       }
     } catch (e) {
-      console.warn('[MODEL] findBone mapping failed', e);
+  logger.warn('[MODEL] findBone mapping failed', e);
     }
 
     // 构建手臂骨骼链（若存在）用于后续 IK 计算
     try {
       buildArmChains();
-      console.log('[MODEL] leftArmChain=', leftArmChain.map(b=>b.name));
-      console.log('[MODEL] rightArmChain=', rightArmChain.map(b=>b.name));
+  logger.debug('[MODEL] leftArmChain=', leftArmChain.map(b=>b.name));
+  logger.debug('[MODEL] rightArmChain=', rightArmChain.map(b=>b.name));
     } catch (e) {
-      console.warn('[MODEL] buildArmChains failed', e);
+  logger.warn('[MODEL] buildArmChains failed', e);
     }
     // 缓存头骨引用（用于手部映射的参考点）
     try {
@@ -645,28 +646,28 @@ function loadRobotModel() {
       }
 
       if (robotHead) {
-        console.log('[MODEL] robotHead node =', robotHead.name);
+  logger.debug('[MODEL] robotHead node =', robotHead.name);
       } else {
-        console.warn('[MODEL] robot head bone not found, fallback to robot origin');
+  logger.warn('[MODEL] robot head bone not found, fallback to robot origin');
       }
     } catch (e) {
-      console.warn('[MODEL] resolve robot head failed', e);
+  logger.warn('[MODEL] resolve robot head failed', e);
       robotHead = null;
     }
     // 额外检测手指骨骼
     try {
       detectFingerBones();
-      console.log('[MODEL] fingerBonesLeft=', fingerBonesLeft.map(b=>b.name));
-      console.log('[MODEL] fingerBonesRight=', fingerBonesRight.map(b=>b.name));
+  logger.debug('[MODEL] fingerBonesLeft=', fingerBonesLeft.map(b=>b.name));
+  logger.debug('[MODEL] fingerBonesRight=', fingerBonesRight.map(b=>b.name));
     } catch (e) {
-      console.warn('[MODEL] detectFingerBones failed', e);
+  logger.warn('[MODEL] detectFingerBones failed', e);
     }
     // 构建 per-finger 短链，用于短链 IK（thumb/index/middle）
     try {
       buildFingerChains();
-      console.log('[MODEL] leftFingerChains=', Object.keys(leftFingerChains));
-      console.log('[MODEL] rightFingerChains=', Object.keys(rightFingerChains));
-    } catch (e) { console.warn('[MODEL] buildFingerChains failed', e); }
+  logger.debug('[MODEL] leftFingerChains=', Object.keys(leftFingerChains));
+  logger.debug('[MODEL] rightFingerChains=', Object.keys(rightFingerChains));
+  } catch (e) { logger.warn('[MODEL] buildFingerChains failed', e); }
     // 保存 palm / hand / wrist 的绑定四元数（rest pose），用于在 IK 后恢复或限制 palm 旋转
     try {
       palmBindQuats = {};
@@ -678,7 +679,7 @@ function loadRobotModel() {
         }
       }
     } catch (e) {
-      console.warn('[MODEL] save palm bind quats failed', e);
+  logger.warn('[MODEL] save palm bind quats failed', e);
     }
     // 创建调试可视化
     try {
@@ -687,61 +688,61 @@ function loadRobotModel() {
     // 初始化躯干简单碰撞体（基于已知骨骼位置）
     try {
       initBodyColliders();
-      console.log('[MODEL] bodyColliders=', bodyColliders);
-    } catch (e) { console.warn('[MODEL] initBodyColliders failed', e); }
+      logger.debug('[MODEL] bodyColliders=', bodyColliders);
+    } catch (e) { logger.warn('[MODEL] initBodyColliders failed', e); }
 
     if (gltf.animations && gltf.animations.length > 0) {
            mixer = new THREE.AnimationMixer(robot);
-           console.log(`[动画] 找到 ${gltf.animations.length} 个动画:`);
+           logger.info(`[动画] 找到 ${gltf.animations.length} 个动画:`);
            gltf.animations.forEach((clip, index) => {
-             console.log(`  [${index}] "${clip.name}" - 时长: ${clip.duration.toFixed(2)}s`);
+             logger.info(`  [${index}] "${clip.name}" - 时长: ${clip.duration.toFixed(2)}s`);
              const lowerName = clip.name.toLowerCase();
              
              // 待机动画
              if (lowerName.includes('idle')) {
                idleAction = mixer.clipAction(clip);
-               console.log(`    → 设为待机动画`);
+               logger.debug(`    → 设为待机动画`);
              }
              
              // 行走动画：只匹配 "walking"，排除 "walkjump"
              if (lowerName === 'walking' || (lowerName.includes('walk') && !lowerName.includes('jump') && !lowerName.includes('run'))) {
                walkAction = mixer.clipAction(clip);
-               console.log(`    → 设为行走动画`);
+               logger.debug(`    → 设为行走动画`);
              }
            });
            
            // 如果没找到walk动画，尝试其他名称
            if (!walkAction) {
-             console.log('[动画] 未找到walk动画，尝试查找其他名称...');
+             logger.info('[动画] 未找到walk动画，尝试查找其他名称...');
              gltf.animations.forEach((clip) => {
                const lowerName = clip.name.toLowerCase();
                if (lowerName.includes('walking') || lowerName === 'walk') {
                  walkAction = mixer.clipAction(clip);
-                 console.log(`    → 使用 "${clip.name}" 作为行走动画`);
+                 logger.debug(`    → 使用 "${clip.name}" 作为行走动画`);
                }
              });
            }
            
            if (idleAction) {
              idleAction.play();
-             console.log('[动画] 播放待机动画');
+             logger.debug('[动画] 播放待机动画');
            }
            if (walkAction) {
              walkAction.timeScale = 1.0; // 使用正常速度（0.96秒一个循环）
-             console.log('[动画] 行走动画已准备，速度: 1.0x');
+             logger.debug('[动画] 行走动画已准备，速度: 1.0x');
            }
       }
-      console.log('机器人模型加载成功！');
+          logger.info('机器人模型加载成功！');
     },
     // progress callback
     function (xhr) {
       try {
         const pct = xhr.total ? (xhr.loaded / xhr.total * 100).toFixed(1) : null;
-        console.log('[VR] GLTFLoader progress', xhr.loaded, 'bytes', pct ? pct + '%' : '');
+        logger.debug('[VR] GLTFLoader progress', xhr.loaded, 'bytes', pct ? pct + '%' : '');
       } catch (e) {}
     },
     function (error) {
-      console.error('[VR] 加载机器人模型失败（GLTFLoader onError）。将使用占位模型。', error);
+      logger.error('[VR] 加载机器人模型失败（GLTFLoader onError）。将使用占位模型。', error);
     }
   );
 }
@@ -754,14 +755,14 @@ function applyAvatarConfig(config) {
 
   // 1. 清理旧机器人
   if (robot && robot.parent === scene) {
-    try { scene.remove(robot); } catch (e) { console.warn('[Avatar] remove old robot failed', e); }
+    try { scene.remove(robot); } catch (e) { logger.warn('[Avatar] remove old robot failed', e); }
   }
 
   // 2. 有 modelUrl：通过 GLTFLoader 加载（预设 或 自定义上传）
   if (config && config.modelUrl) {
     const url = config.modelUrl;
     const isCustom = config.source === 'custom' || config._fromIndexedDB;
-    console.log(`[Avatar] loading ${isCustom ? 'custom' : 'preset'} avatar from url:`, url);
+    logger.info(`[Avatar] loading ${isCustom ? 'custom' : 'preset'} avatar from url:`, url);
 
     const loader = new GLTFLoader();
     loader.load(
@@ -797,7 +798,7 @@ function applyAvatarConfig(config) {
               };
             }
           } catch (e) {
-            console.warn('[Avatar] apply preset mapping names failed', e);
+            logger.warn('[Avatar] apply preset mapping names failed', e);
           }
 
           // 重新收集骨骼名称
@@ -809,8 +810,8 @@ function applyAvatarConfig(config) {
               detectedMeshSkeletonBones.push(child.skeleton.bones.map((b) => b.name));
             }
           });
-          console.log('[AVATAR] (preset) boneNames:', detectedBoneNames);
-          console.log('[AVATAR] (preset) mesh skeleton bones:', detectedMeshSkeletonBones);
+          logger.debug('[AVATAR] (preset) boneNames:', detectedBoneNames);
+          logger.debug('[AVATAR] (preset) mesh skeleton bones:', detectedMeshSkeletonBones);
 
           // 重新构建手臂链、手指链和碰撞体等
           buildArmChainsFromMappingOrAuto();
@@ -825,7 +826,7 @@ function applyAvatarConfig(config) {
           walkAction = null;
           if (gltf.animations && gltf.animations.length) {
             mixer = new THREE.AnimationMixer(robot);
-            console.log(`[AVATAR] found ${gltf.animations.length} animations`);
+            logger.info(`[AVATAR] found ${gltf.animations.length} animations`);
             gltf.animations.forEach((clip) => {
               const lowerName = clip.name.toLowerCase();
               if (lowerName.includes('idle')) idleAction = mixer.clipAction(clip);
@@ -835,15 +836,15 @@ function applyAvatarConfig(config) {
             });
             if (idleAction) idleAction.play();
           }
-          console.log(`[Avatar] ${isCustom ? 'custom' : 'preset'} avatar loaded successfully`);
+          logger.info(`[Avatar] ${isCustom ? 'custom' : 'preset'} avatar loaded successfully`);
         } catch (e) {
-          console.error('[Avatar] avatar post-setup failed, fallback to default', e);
+          logger.error('[Avatar] avatar post-setup failed, fallback to default', e);
           loadRobotModel();
         }
       },
       undefined,
       (error) => {
-        console.error('[Avatar] failed to load model url, fallback to default', error);
+  logger.error('[Avatar] failed to load model url, fallback to default', error);
         loadRobotModel();
       }
     );
@@ -864,7 +865,7 @@ function applyAvatarConfig(config) {
   try {
     cloned = avatarScene.clone(true);
   } catch (e) {
-    console.warn('[Avatar] clone avatar scene failed, fallback to original scene instance', e);
+  logger.warn('[Avatar] clone avatar scene failed, fallback to original scene instance', e);
     cloned = avatarScene;
   }
 
@@ -895,7 +896,7 @@ function applyAvatarConfig(config) {
       };
     }
   } catch (e) {
-    console.warn('[Avatar] apply mapping names failed', e);
+    logger.warn('[Avatar] apply mapping names failed', e);
   }
 
   // 像默认模型一样，重建骨骼链、手指、碰撞体和动画
@@ -909,8 +910,8 @@ function applyAvatarConfig(config) {
         detectedMeshSkeletonBones.push(child.skeleton.bones.map((b) => b.name));
       }
     });
-    console.log('[AVATAR] boneNames:', detectedBoneNames);
-    console.log('[AVATAR] mesh skeleton bones:', detectedMeshSkeletonBones);
+  logger.debug('[AVATAR] boneNames:', detectedBoneNames);
+  logger.debug('[AVATAR] mesh skeleton bones:', detectedMeshSkeletonBones);
 
   // 重新构建手臂链、手指链和碰撞体等
   buildArmChainsFromMappingOrAuto();
@@ -923,7 +924,7 @@ function applyAvatarConfig(config) {
     mixer = null;
     if (config.raw.gltf && config.raw.gltf.animations && config.raw.gltf.animations.length) {
       mixer = new THREE.AnimationMixer(robot);
-      console.log(`[AVATAR] found ${config.raw.gltf.animations.length} animations`);
+  logger.info(`[AVATAR] found ${config.raw.gltf.animations.length} animations`);
       idleAction = null;
       walkAction = null;
       config.raw.gltf.animations.forEach((clip) => {
@@ -936,7 +937,7 @@ function applyAvatarConfig(config) {
       if (idleAction) idleAction.play();
     }
   } catch (e) {
-    console.error('[Avatar] post-setup for custom avatar failed', e);
+    logger.error('[Avatar] post-setup for custom avatar failed', e);
   }
 }
 
@@ -961,14 +962,14 @@ function setupControllers() {
     }
   });
   controller1.addEventListener('selectend', () => { 
-    console.log('controller1 selectend'); 
+    logger.debug('controller1 selectend'); 
   });
   // 支持 squeeze 事件作为备选（有些控制器使用 squeeze）
   controller1.addEventListener('squeezestart', () => { 
-    console.log('controller1 squeezestart');
+    logger.debug('controller1 squeezestart');
     if (calibrating) calibrateInitialPose();
   });
-  controller1.addEventListener('squeezeend', () => { console.log('controller1 squeezeend'); });
+  controller1.addEventListener('squeezeend', () => { logger.debug('controller1 squeezeend'); });
     scene.add(controller1);
 
     // 控制器 1 (右手柄：用于手势跟随 Gestures)
@@ -989,12 +990,12 @@ function setupControllers() {
       return;
     }
   });
-  controller2.addEventListener('selectend', () => { console.log('controller2 selectend'); });
+  controller2.addEventListener('selectend', () => { logger.debug('controller2 selectend'); });
   controller2.addEventListener('squeezestart', () => { 
-    console.log('controller2 squeezestart');
+    logger.debug('controller2 squeezestart');
     if (calibrating) calibrateInitialPose();
   });
-  controller2.addEventListener('squeezeend', () => { console.log('controller2 squeezeend'); });
+  controller2.addEventListener('squeezeend', () => { logger.debug('controller2 squeezeend'); });
     scene.add(controller2);
 
     // 添加可视化的控制器网格
@@ -1128,7 +1129,7 @@ function setupMirrorView() {
   mirrorCanvas.style.pointerEvents = 'none'; // 不阻挡鼠标事件
   container.value.appendChild(mirrorCanvas);
   
-  console.log('[MIRROR] Mirror view created');
+  logger.info('[MIRROR] Mirror view created');
 }
 
 // 更新镜像视图相机位置（在机器人正前方）
@@ -1366,9 +1367,9 @@ function buildArmChainsFromMappingOrAuto() {
     const hand = robot.getObjectByName(MAPPED_JOINTS.leftHand);
     if (shoulder && upperArm && lowerArm && hand) {
       leftArmChain = [shoulder, upperArm, lowerArm, hand];
-      console.log('[IK] Left arm chain from mapping (4 bones):', leftArmChain.map(b => b.name));
+  logger.info('[IK] Left arm chain from mapping (4 bones):', leftArmChain.map(b => b.name));
     } else {
-      console.warn('[IK] Left mapped joints not all found, fallback to auto chain', {
+  logger.warn('[IK] Left mapped joints not all found, fallback to auto chain', {
         shoulder: !!shoulder,
         upperArm: !!upperArm,
         lowerArm: !!lowerArm,
@@ -1385,9 +1386,9 @@ function buildArmChainsFromMappingOrAuto() {
     const hand = robot.getObjectByName(MAPPED_JOINTS.rightHand);
     if (shoulder && upperArm && lowerArm && hand) {
       rightArmChain = [shoulder, upperArm, lowerArm, hand];
-      console.log('[IK] Right arm chain from mapping:', rightArmChain.map(b => b.name));
+  logger.info('[IK] Right arm chain from mapping:', rightArmChain.map(b => b.name));
     } else {
-      console.warn('[IK] Right mapped joints not all found, fallback to auto chain', {
+  logger.warn('[IK] Right mapped joints not all found, fallback to auto chain', {
         shoulder: !!shoulder,
         upperArm: !!upperArm,
         lowerArm: !!lowerArm,
@@ -1399,7 +1400,7 @@ function buildArmChainsFromMappingOrAuto() {
   // 当任一侧未能成功从映射构造时，使用原有自动推断补全
   const needAuto = leftArmChain.length === 0 || rightArmChain.length === 0;
   if (needAuto) {
-    console.log('[IK] Using auto arm chain builder for missing side(s)');
+  logger.info('[IK] Using auto arm chain builder for missing side(s)');
     buildArmChains();
   } else {
     leftArmChainInfo = buildChainInfo(leftArmChain);
@@ -1868,7 +1869,7 @@ function initBodyColliders() {
     colliderMeshes.push(mesh);
   }
   
-  console.log('[COLLIDER] created', bodyColliders.length, 'simple colliders at robot position');
+  logger.info('[COLLIDER] created', bodyColliders.length, 'simple colliders at robot position');
 }
 
 // Refresh body collider world centers so they follow robot movement and bone animations
@@ -1919,7 +1920,7 @@ function pushTargetOutOfColliders(targetWorldPos, margin = 0.04) {
     }
   }
   if (pushed) {
-    if (showDebugHelpers) console.log('[COLLIDE] target pushed out of collider by', maxAdjust.toFixed(3), 'm');
+  if (showDebugHelpers) logger.debug('[COLLIDE] target pushed out of collider by', maxAdjust.toFixed(3), 'm');
     return best;
   }
   return adjusted;
@@ -1928,7 +1929,7 @@ function pushTargetOutOfColliders(targetWorldPos, margin = 0.04) {
 function onControllerConnected(event) {
     const handed = event.data && event.data.handedness;
     showDebug(`✓ ${handed === 'left' ? '左' : '右'}手柄已连接`);
-    console.log(`控制器 ${handed} 已连接`);
+  logger.info(`控制器 ${handed} 已连接`);
     if (!handed || !event.target) return;
     const controller = event.target;
     controller.userData = controller.userData || {};
@@ -2227,13 +2228,13 @@ function simpleTwoJointIK(shoulder, elbow, hand, targetPos) {
     _lastIKLogTime = now;
     const elbowAngleDeg = (elbowAngle * 180 / Math.PI).toFixed(1);
     const shoulderAngleDeg = (shoulderAngle * 180 / Math.PI).toFixed(1);
-    console.log(`[IK调试] 骨骼: ${shoulder.name} → ${elbow.name} → ${hand.name}`);
-    console.log(`[IK调试] 大臂长=${b.toFixed(3)}m, 小臂长=${a.toFixed(3)}m, 总长=${totalLen.toFixed(3)}m`);
-    console.log(`[IK调试] 目标距离=${c.toFixed(3)}m, 最大可达=${maxReach.toFixed(3)}m`);
-    console.log(`[IK调试] 距离被限制: ${wasClampedMax ? '超出最大' : wasClampedMin ? '小于最小' : '正常范围'}`);
-    console.log(`[IK调试] 计算角度: 肘部内角=${elbowAngleDeg}°, 肩部角=${shoulderAngleDeg}°`);
-    console.log(`[IK调试] 肘部弯曲程度: ${(180 - parseFloat(elbowAngleDeg)).toFixed(1)}° (180°=伸直, 0°=完全折叠)`);
-    console.log('---');
+  logger.debug(`[IK调试] 骨骼: ${shoulder.name} → ${elbow.name} → ${hand.name}`);
+  logger.debug(`[IK调试] 大臂长=${b.toFixed(3)}m, 小臂长=${a.toFixed(3)}m, 总长=${totalLen.toFixed(3)}m`);
+  logger.debug(`[IK调试] 目标距离=${c.toFixed(3)}m, 最大可达=${maxReach.toFixed(3)}m`);
+  logger.debug(`[IK调试] 距离被限制: ${wasClampedMax ? '超出最大' : wasClampedMin ? '小于最小' : '正常范围'}`);
+  logger.debug(`[IK调试] 计算角度: 肘部内角=${elbowAngleDeg}°, 肩部角=${shoulderAngleDeg}°`);
+  logger.debug(`[IK调试] 肘部弯曲程度: ${(180 - parseFloat(elbowAngleDeg)).toFixed(1)}° (180°=伸直, 0°=完全折叠)`);
+  logger.debug('---');
   }
 
   // === 第一步：旋转肩膀（大臂）===
@@ -2319,7 +2320,7 @@ function handleLeftHandFollow() {
   
   const leftHandJoint = findBone(robot, LEFT_HAND_NAME, 'left');
   if (!leftHandJoint) {
-    console.warn('[WARN] left hand joint not found');
+  logger.warn('[WARN] left hand joint not found');
     return;
   }
   // 仅使用“左手”控制器
@@ -2366,9 +2367,9 @@ function handleLeftHandFollow() {
   deltaRobotLocal.multiplyScalar(scaleRatio);
   
   if (now - lastLeftLogTime > 1000) {
-    console.log(`[左手] 用户偏移: x=${baseDeltaUser.x.toFixed(3)}, y=${baseDeltaUser.y.toFixed(3)}, z=${baseDeltaUser.z.toFixed(3)}`);
-    console.log(`[左手] 机器人本地偏移: x=${deltaRobotLocal.x.toFixed(3)}, y=${deltaRobotLocal.y.toFixed(3)}, z=${deltaRobotLocal.z.toFixed(3)}`);
-    console.log(`[左手] 手臂长度缩放: robotArmLen=${robotArmLen.toFixed(3)}, scaleRatio=${scaleRatio.toFixed(3)}`);
+  logger.debug(`[左手] 用户偏移: x=${baseDeltaUser.x.toFixed(3)}, y=${baseDeltaUser.y.toFixed(3)}, z=${baseDeltaUser.z.toFixed(3)}`);
+  logger.debug(`[左手] 机器人本地偏移: x=${deltaRobotLocal.x.toFixed(3)}, y=${deltaRobotLocal.y.toFixed(3)}, z=${deltaRobotLocal.z.toFixed(3)}`);
+  logger.debug(`[左手] 手臂长度缩放: robotArmLen=${robotArmLen.toFixed(3)}, scaleRatio=${scaleRatio.toFixed(3)}`);
     lastLeftLogTime = now;
   }
   
@@ -2392,7 +2393,7 @@ function handleLeftHandFollow() {
     const elbow = leftArmChain[2];    // LowerArmL - 小臂，控制肘部弯曲
     const hand = leftArmChain[3];     // Hand - 手掌，IK 目标末端
     if (now - lastLeftLogTime > 1000) {
-      console.log('[IK-L] 4-bone chain, using [1,2,3]:', shoulder?.name, elbow?.name, hand?.name);
+  logger.info('[IK-L] 4-bone chain, using [1,2,3]:', shoulder?.name, elbow?.name, hand?.name);
     }
     simpleTwoJointIK(shoulder, elbow, hand, adjustedTarget);
   } else if (leftArmChain && leftArmChain.length === 3) {
@@ -2401,12 +2402,12 @@ function handleLeftHandFollow() {
     const elbow = leftArmChain[1];
     const hand = leftArmChain[2];
     if (now - lastLeftLogTime > 1000) {
-      console.log('[IK-L] 3-bone chain, using [0,1,2]:', shoulder?.name, elbow?.name, hand?.name);
+  logger.info('[IK-L] 3-bone chain, using [0,1,2]:', shoulder?.name, elbow?.name, hand?.name);
     }
     simpleTwoJointIK(shoulder, elbow, hand, adjustedTarget);
   } else {
     if (now - lastLeftLogTime > 1000) {
-      console.warn('[IK-L] No valid arm chain! length=', leftArmChain?.length);
+  logger.warn('[IK-L] No valid arm chain! length=', leftArmChain?.length);
     }
   }
 }
@@ -2417,7 +2418,7 @@ function handleRightHandFollow() {
   
   const rightHandJoint = findBone(robot, RIGHT_HAND_NAME || RIGHT_HAND_JOINT_NAME, 'right');
   if (!rightHandJoint) {
-    console.warn('[WARN] right hand joint not found');
+  logger.warn('[WARN] right hand joint not found');
     return;
   }
   // 仅使用“右手”控制器
@@ -2458,9 +2459,9 @@ function handleRightHandFollow() {
   deltaRobotLocalR.multiplyScalar(scaleRatioR);
   
   if (now - lastRightLogTime > 1000) {
-    console.log(`[右手] 用户偏移: x=${baseDeltaUserR.x.toFixed(3)}, y=${baseDeltaUserR.y.toFixed(3)}, z=${baseDeltaUserR.z.toFixed(3)}`);
-    console.log(`[右手] 机器人本地偏移: x=${deltaRobotLocalR.x.toFixed(3)}, y=${deltaRobotLocalR.y.toFixed(3)}, z=${deltaRobotLocalR.z.toFixed(3)}`);
-    console.log(`[右手] 手臂长度缩放: robotArmLen=${robotArmLenR.toFixed(3)}, scaleRatio=${scaleRatioR.toFixed(3)}`);
+  logger.debug(`[右手] 用户偏移: x=${baseDeltaUserR.x.toFixed(3)}, y=${baseDeltaUserR.y.toFixed(3)}, z=${baseDeltaUserR.z.toFixed(3)}`);
+  logger.debug(`[右手] 机器人本地偏移: x=${deltaRobotLocalR.x.toFixed(3)}, y=${deltaRobotLocalR.y.toFixed(3)}, z=${deltaRobotLocalR.z.toFixed(3)}`);
+  logger.debug(`[右手] 手臂长度缩放: robotArmLen=${robotArmLenR.toFixed(3)}, scaleRatio=${scaleRatioR.toFixed(3)}`);
     lastRightLogTime = now;
   }
   
@@ -2482,7 +2483,7 @@ function handleRightHandFollow() {
     const elbow = rightArmChain[2];    // LowerArmR - 小臂，控制肘部弯曲
     const hand = rightArmChain[3];     // Hand - 手掌，IK 目标末端
     if (now - lastRightLogTime > 1000) {
-      console.log('[IK-R] 4-bone chain, using [1,2,3]:', shoulder?.name, elbow?.name, hand?.name);
+  logger.info('[IK-R] 4-bone chain, using [1,2,3]:', shoulder?.name, elbow?.name, hand?.name);
     }
     simpleTwoJointIK(shoulder, elbow, hand, adjustedTarget);
   } else if (rightArmChain && rightArmChain.length === 3) {
@@ -2491,12 +2492,12 @@ function handleRightHandFollow() {
     const elbow = rightArmChain[1];
     const hand = rightArmChain[2];
     if (now - lastRightLogTime > 1000) {
-      console.log('[IK-R] 3-bone chain, using [0,1,2]:', shoulder?.name, elbow?.name, hand?.name);
+  logger.info('[IK-R] 3-bone chain, using [0,1,2]:', shoulder?.name, elbow?.name, hand?.name);
     }
     simpleTwoJointIK(shoulder, elbow, hand, adjustedTarget);
   } else {
     if (now - lastRightLogTime > 1000) {
-      console.warn('[IK-R] No valid arm chain! length=', rightArmChain?.length);
+  logger.warn('[IK-R] No valid arm chain! length=', rightArmChain?.length);
     }
   }
 }

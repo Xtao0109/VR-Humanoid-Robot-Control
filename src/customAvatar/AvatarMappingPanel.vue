@@ -59,6 +59,7 @@
 import { ref, watch } from 'vue';
 import { LOGICAL_JOINTS, createEmptyMapping } from './avatarTypes.js';
 import { loadAvatarModel, summarizeBones, suggestMappingFromBones } from './avatarLoader.js';
+import logger from '../utils/logger';
 
 const emit = defineEmits([
   // 当用户完成选择并点击“使用该模型”时发出
@@ -101,7 +102,7 @@ async function onFileChange(event) {
     // 每次加载新模型重置映射
     localMapping.value = createEmptyMapping();
   } catch (e) {
-    console.error('[AvatarMappingPanel] load error', e);
+    logger.error('[AvatarMappingPanel] load error', e);
     error.value = e?.message || '模型加载失败';
     lastFileData.value = null;
     lastFileName.value = '';

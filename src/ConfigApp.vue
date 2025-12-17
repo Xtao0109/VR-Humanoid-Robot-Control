@@ -51,6 +51,7 @@
 import { ref, onMounted } from 'vue';
 import AvatarMappingPanel from './customAvatar/AvatarMappingPanel.vue';
 import { saveCustomAvatarFile, clearCustomAvatarFile } from './utils/avatarStorage.js';
+import logger from './utils/logger';
 
 const AVATAR_CONFIG_KEY = 'vr_avatar_config_v1';
 
@@ -81,12 +82,12 @@ function applyPreset() {
 
   try {
     localStorage.setItem(AVATAR_CONFIG_KEY, JSON.stringify(stored));
-    lastConfig.value = stored;
-    console.log('[ConfigApp] preset avatar saved to localStorage', stored);
+  lastConfig.value = stored;
+  logger.info('[ConfigApp] preset avatar saved to localStorage', stored);
     // 使用预设时，清除之前可能存储的自定义模型文件
     clearCustomAvatarFile().catch(() => {});
   } catch (e) {
-    console.error('[ConfigApp] Failed to save preset avatar config', e);
+    logger.error('[ConfigApp] Failed to save preset avatar config', e);
   }
 }
 
@@ -95,9 +96,9 @@ async function onAvatarConfirm(payload) {
   if (payload.fileData && payload.fileName) {
     try {
       await saveCustomAvatarFile(payload.fileData, payload.fileName);
-      console.log('[ConfigApp] Custom avatar file saved to IndexedDB');
+      logger.info('[ConfigApp] Custom avatar file saved to IndexedDB');
     } catch (e) {
-      console.error('[ConfigApp] Failed to save file to IndexedDB', e);
+      logger.error('[ConfigApp] Failed to save file to IndexedDB', e);
       alert('保存模型文件失败，请重试');
       return;
     }
@@ -117,9 +118,9 @@ async function onAvatarConfirm(payload) {
   try {
     localStorage.setItem(AVATAR_CONFIG_KEY, JSON.stringify(stored));
     lastConfig.value = stored;
-    console.log('[ConfigApp] Custom avatar config saved to localStorage', stored);
+    logger.info('[ConfigApp] Custom avatar config saved to localStorage', stored);
   } catch (e) {
-    console.error('[ConfigApp] Failed to save avatar config', e);
+    logger.error('[ConfigApp] Failed to save avatar config', e);
   }
 }
 
@@ -140,7 +141,7 @@ onMounted(() => {
       presets.value = Array.isArray(data) ? data : [];
     })
     .catch((e) => {
-      console.error('[ConfigApp] Failed to load avatars.json', e);
+      logger.error('[ConfigApp] Failed to load avatars.json', e);
       presetsError.value = '预设列表加载失败';
     })
     .finally(() => {
@@ -154,7 +155,7 @@ onMounted(() => {
       lastConfig.value = JSON.parse(raw);
     }
   } catch (e) {
-    console.warn('[ConfigApp] Failed to read existing avatar config', e);
+    logger.warn('[ConfigApp] Failed to read existing avatar config', e);
   }
 });
 </script>
