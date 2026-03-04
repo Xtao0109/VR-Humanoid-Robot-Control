@@ -1,0 +1,45 @@
+全流程操作复盘
+1. 空间迁移（地基工程）
+这是最关键的一步。如果不做，安装 PyTorch 时下载到一半账号就会因为 Disk quota exceeded 而崩溃。
+
+操作：创建 Project 下的目录，删除 Home 下的空目录，建立软链接。
+
+结果：
+
+~/.conda ➡️ ~/project/conda_user
+
+~/.cache ➡️ ~/project/conda_cache
+
+~/.pip 缓存 ➡️ ~/project/pip_cache
+
+2. 安装 Miniconda（主程序部署）
+操作：下载清华源的安装脚本，使用 -p ~/project/miniconda3 参数。
+
+关键点：强制指定安装路径。如果不指定，默认装在 Home 下，直接爆盘。
+
+3. 配置加速源（网络优化）
+操作：修改 ~/.condarc 和 ~/.pip/pip.conf。
+
+结果：将下载源从国外的 Anaconda/PyPI 官方站切换到了 清华大学镜像站。
+
+收益：在校内网环境下，下载速度从几十 KB/s 提升至满速，且极大减少了连接超时的概率。
+
+4. 创建专用环境（环境隔离）
+操作：conda create -n robot_env python=3.9
+
+决策理由：
+
+不使用 base 环境，避免污染基础配置。
+
+选择 Python 3.9：是目前机器人领域（ROS2 Humble, Isaac Sim, PyBullet）兼容性最稳健的版本，比 3.10+ 更少遇到库冲突。
+
+5. 安装 A100 驱动库（硬件适配）
+操作：pip install torch ... --index-url ... cu118
+
+决策理由：
+
+A100 (Ampere 架构) 必须配合 CUDA 11.x 或 12.x。
+
+我们避开了默认的 CUDA 10.x 或 CPU 版本，强制指定 CUDA 11.8。
+
+使用 pip 而非 conda 安装，配合清华源，速度更快且依赖解析更准。
