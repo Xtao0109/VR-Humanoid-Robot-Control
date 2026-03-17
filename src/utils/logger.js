@@ -1,12 +1,23 @@
-const isDev = typeof import.meta !== 'undefined' ? import.meta.env.DEV : false;
+const isDev = typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.DEV;
 
-const noop = () => {};
+function toConsole(method, args) {
+  const fn = console?.[method] || console.log;
+  fn('[VR]', ...args);
+}
 
 const logger = {
-  debug: isDev ? console.debug.bind(console) : noop,
-  info: isDev ? console.info.bind(console) : noop,
-  warn: console.warn.bind(console),
-  error: console.error.bind(console),
+  debug(...args) {
+    if (isDev) toConsole('debug', args);
+  },
+  info(...args) {
+    toConsole('info', args);
+  },
+  warn(...args) {
+    toConsole('warn', args);
+  },
+  error(...args) {
+    toConsole('error', args);
+  },
 };
 
 export default logger;
