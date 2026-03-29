@@ -11,6 +11,8 @@
  * - 主键：id（固定为 'custom' 表示当前自定义模型）
  */
 
+import logger from './logger';
+
 const DB_NAME = 'VRAvatarDB';
 const DB_VERSION = 1;
 const STORE_NAME = 'avatarFiles';
@@ -27,7 +29,7 @@ function openDB() {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
 
     request.onerror = () => {
-      console.error('[AvatarStorage] Failed to open IndexedDB', request.error);
+      logger.error('[AvatarStorage] Failed to open IndexedDB', request.error);
       reject(request.error);
     };
 
@@ -39,7 +41,7 @@ function openDB() {
       const db = event.target.result;
       if (!db.objectStoreNames.contains(STORE_NAME)) {
         db.createObjectStore(STORE_NAME, { keyPath: 'id' });
-        console.log('[AvatarStorage] Created object store:', STORE_NAME);
+        logger.debug('[AvatarStorage] Created object store:', STORE_NAME);
       }
     };
   });
@@ -70,12 +72,12 @@ export async function saveCustomAvatarFile(fileData, fileName) {
     const request = store.put(record);
 
     request.onsuccess = () => {
-      console.log('[AvatarStorage] Saved custom avatar file:', fileName, 'size:', fileData.byteLength);
+      logger.info('[AvatarStorage] Saved custom avatar file:', fileName, 'size:', fileData.byteLength);
       resolve();
     };
 
     request.onerror = () => {
-      console.error('[AvatarStorage] Failed to save file', request.error);
+      logger.error('[AvatarStorage] Failed to save file', request.error);
       reject(request.error);
     };
   });
@@ -96,7 +98,7 @@ export async function loadCustomAvatarFile() {
     request.onsuccess = () => {
       const record = request.result;
       if (record) {
-        console.log('[AvatarStorage] Loaded custom avatar file:', record.fileName, 'size:', record.fileData.byteLength);
+        logger.info('[AvatarStorage] Loaded custom avatar file:', record.fileName, 'size:', record.fileData.byteLength);
         resolve(record);
       } else {
         resolve(null);
@@ -104,7 +106,7 @@ export async function loadCustomAvatarFile() {
     };
 
     request.onerror = () => {
-      console.error('[AvatarStorage] Failed to load file', request.error);
+      logger.error('[AvatarStorage] Failed to load file', request.error);
       reject(request.error);
     };
   });
@@ -123,12 +125,12 @@ export async function clearCustomAvatarFile() {
     const request = store.delete('custom');
 
     request.onsuccess = () => {
-      console.log('[AvatarStorage] Cleared custom avatar file');
+      logger.info('[AvatarStorage] Cleared custom avatar file');
       resolve();
     };
 
     request.onerror = () => {
-      console.error('[AvatarStorage] Failed to clear file', request.error);
+      logger.error('[AvatarStorage] Failed to clear file', request.error);
       reject(request.error);
     };
   });

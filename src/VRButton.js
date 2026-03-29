@@ -1,3 +1,5 @@
+import logger from './utils/logger';
+
 /**
  * A utility class for creating a button that allows to initiate
  * immersive VR sessions based on WebXR. The button can be created
@@ -103,7 +105,7 @@ class VRButton {
 							.then( onSessionStarted )
 							.catch( ( err ) => {
 
-								console.warn( err );
+								logger.warn( err );
 
 							} );
 
@@ -119,7 +121,7 @@ class VRButton {
 					.then( onSessionStarted )
 					.catch( ( err ) => {
 
-						console.warn( err );
+						logger.warn( err );
 
 					} );
 
@@ -150,11 +152,11 @@ class VRButton {
 
 		}
 
-		function showVRNotAllowed( exception ) {
+				function showVRNotAllowed( exception ) {
 
 			disableButton();
 
-			console.warn( 'Exception when trying to call xr.isSessionSupported', exception );
+						logger.warn( 'Exception when trying to call xr.isSessionSupported', exception );
 
 			button.textContent = 'VR NOT ALLOWED';
 
